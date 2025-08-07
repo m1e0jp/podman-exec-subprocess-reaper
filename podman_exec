@@ -1,0 +1,76 @@
+#!/bin/bash
+
+##: Usase: podman_exec [OPTIONS ...] CONTAINER COMMAND [ARGS...]
+##:: This is a wrapper script for "podman exec" command. 
+##:: It ensures container subprocesses receive SIGTERM when the Podman exec process is terminated.
+##:: (Standard podman exec does not propagate signals to container subprocesses as of v4.9.4.)
+##:: NOTE:
+##::   Process termination is handled via pkill.
+##::   Therefore, when used with generic command lines like `bash`,
+##::   there is a risk of inadvertently affecting other processes.
+
+# 2025-08-06 ver.1.0 m1e0jp
+
+set -Cuex -o pipefail
+ORIGIN=$$
+ARGS=("$@")
+
+term_process(){
+    # コマンドライン引数の要素を後ろから連結しながら、後方一致するプロセスを探す
+    for (( i=${#ARGS[@]}-1; i>=0; i-- )); do 
+
+        # pgrep/pkill コマンドのコマンドラインは空白文字の数やクォートの有無が揺らぐので、正規表現を使ってこれらの揺らぎを吸収する。
+        command_line="${ARGS[i]}${command_line+ $command_line}"
+        _command_line=$(echo "$command_line" | sed -E 's/ +/ /g')
+        _command_line="${_command_line//\\/\\\?}" # \ → \?
+        _command_line="${_command_line//\?/\\\?}" # \? → \\?
+        _command_line="${_command_line//\./\\\.}"
+        _command_line="${_command_line//\^/\\\^}"
+        _command_line="${_command_line//\$/\\\$}"
+        _command_line="${_command_line//\|/\\\|}"
+        _command_line="${_command_line//\[/\\\[}"
+        _command_line="${_command_line//\]/\\\]}"
+        _command_line="${_command_line//\(/\\\(}"
+        _command_line="${_command_line//\)/\\\)}"
+        _command_line="${_command_line//\{/\\\{}"
+        _command_line="${_command_line//\}/\\\}}"
+        _command_line="${_command_line//\+/\\\+}"
+        _command_line="${_command_line//\*/\\\*}"
+        _command_line="${_command_line//\"/\"?}"
+        _command_line="${_command_line//\'/\'?}"
+        _command_line="${_command_line// / +}"
+
+        # pgrep -fx で、コマンドライン全体に一致するプロセスを見つけたら、pkillを試行してループを抜ける(break)。pkill(SIGTERM)の成否は問わない。
+        if pgrep -fx -- "$_command_line" >/dev/null; then
+            pkill -fx -- "$_command_line" || true
+            break
+        fi
+    done
+}
+
+term_subprocess_on_origin_exit(){
+    # このスクリプトの実行中、ループして待機する
+    while kill -0 "$ORIGIN" 2>/dev/null; do
+        sleep 5
+    done
+
+    # ループを抜けたら（このラッパースクリプトのプロセスが消えたら）、podman exec "$@" で起動したプロセスを終了させる。
+    term_process "$@"
+}
+
+# このスクリプトが SIGINT, SIGTERM で止められたときは、trapしてterm_processを呼び出す。
+trap term_process EXIT
+
+# このスクリプトが SIGKILL で止められても(trapが動かなくても)問題ないように、サブプロセス回収用のサブプロセスを独立させておく。
+term_subprocess_on_origin_exit "$@" &
+
+# ★★★目的の処理を呼び出す★★★
+podman exec "$@" && ret=0 || ret=$? # ret= 目的の処理の終了コードを保存しておき、最終行においてこのスクリプトの終了コードとする。
+
+# term_subprocess_on_origin_exit & を回収
+kill $! 2>/dev/null 
+wait 2>/dev/null
+sync
+
+trap - EXIT
+exit "$ret"
