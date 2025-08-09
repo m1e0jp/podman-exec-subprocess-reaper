@@ -9,18 +9,22 @@
 ##::   Therefore, when used with generic command lines like `bash`,
 ##::   there is a risk of inadvertently affecting other processes.
 
-# 2025-08-06 ver.1.0 m1e0jp
+# 2025-08-06 ver.1.0b m.aoyama.aa@c-nexco.co.jp
+# 2025-08-09 ver.1.1
 
 set -Cue -o pipefail
 ORIGIN=$$
 ARGS=("$@")
 
 term_process(){
-    # コマンドライン引数の要素を後ろから連結しながら、後方一致するプロセスを探す
-    for (( i=${#ARGS[@]}-1; i>=0; i-- )); do 
+    # コマンドライン引数の要素を前方から削りながら、完全一致するプロセスを探す (ver.1.1)
+    for (( i=0; i<${#ARGS[@]}; i++ )); do
+        command_line=
+        for (( j=i; j<${#ARGS[@]}; j++ )); do
+            command_line="${command_line:+$command_line }${ARGS[j]}"
+        done
 
         # pgrep/pkill コマンドのコマンドラインは空白文字の数やクォートの有無が揺らぐので、正規表現を使ってこれらの揺らぎを吸収する。
-        command_line="${ARGS[i]}${command_line+ $command_line}"
         _command_line=$(echo "$command_line" | sed -E 's/ +/ /g')
         _command_line="${_command_line//\\/\\\?}" # \ → \?
         _command_line="${_command_line//\?/\\\?}" # \? → \\?
