@@ -1,26 +1,35 @@
 #!/bin/bash
 
 ##: Usase: podman_exec [OPTIONS ...] CONTAINER COMMAND [ARGS...]
-##:: This is a wrapper script for "podman exec" command. 
+##:: This is a wrapper script for "podman exec" command.
 ##:: It ensures container subprocesses receive SIGTERM when the Podman exec process is terminated.
 ##:: (Standard podman exec does not propagate signals to container subprocesses as of v4.9.4.)
 ##:: NOTE:
-##::   Process termination is handled via pkill.
-##::   Therefore, when used with generic command lines like `bash`,
-##::   there is a risk of inadvertently affecting other processes.
+##::       This script uses pkill to terminate processes inside the container.
+##::   If multiple processes share the same command line, there is a risk
+##::   of unintentionally terminating all of them.
+##::       To avoid this, include a unique string in the command executed
+##::   via podman exec, such as by adding a dummy option.
+#
+#      コンテナ内のプロセスの終了に pkill を使用しています。
+#      そのため、同じコマンドラインをもつ複数のプロセスが存在すると、
+#      意図せずそれらのプロセスすべてを終了させてしまうリスクがあります。
+#      これを避けるには、podman exec で起動するコマンドにダミーのオプションを
+#      設定するなどして、一意の文字列を含めてください。
+#
 
 # 2025-08-06 ver.1.0b m.aoyama.aa@c-nexco.co.jp
-# 2025-08-09 ver.1.1
+# 2025-08-09 ver.1.1a
 
 set -Cue -o pipefail
 ORIGIN=$$
 ARGS=("$@")
 
-term_process(){
+term_process() {
     # コマンドライン引数の要素を前方から削りながら、完全一致するプロセスを探す (ver.1.1)
-    for (( i=0; i<${#ARGS[@]}; i++ )); do
+    for ((i = 0; i < ${#ARGS[@]}; i++)); do
         command_line=
-        for (( j=i; j<${#ARGS[@]}; j++ )); do
+        for ((j = i; j < ${#ARGS[@]}; j++)); do
             command_line="${command_line:+$command_line }${ARGS[j]}"
         done
 
@@ -52,7 +61,7 @@ term_process(){
     done
 }
 
-term_subprocess_on_origin_exit(){
+term_subprocess_on_origin_exit() {
     # このスクリプトの実行中、ループして待機する
     while kill -0 "$ORIGIN" 2>/dev/null; do
         sleep 5
@@ -67,14 +76,17 @@ trap term_process EXIT
 
 # このスクリプトが SIGKILL で止められても(trapが動かなくても)問題ないように、サブプロセス回収用のサブプロセスを独立させておく。
 term_subprocess_on_origin_exit "$@" &
+reaper=$!
 
 # ★★★目的の処理を呼び出す★★★
 podman exec "$@" && ret=0 || ret=$? # ret= 目的の処理の終了コードを保存しておき、最終行においてこのスクリプトの終了コードとする。
 
 # term_subprocess_on_origin_exit & を回収
-kill $! 2>/dev/null 
-wait 2>/dev/null
-sync
+{
+    kill $reaper
+    wait
+    sync
+} 2>/dev/null
 
 trap - EXIT
 exit "$ret"
